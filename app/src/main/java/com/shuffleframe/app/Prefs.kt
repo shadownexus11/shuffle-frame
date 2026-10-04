@@ -7,11 +7,21 @@ enum class TransitionStyle(val label: String) {
     Crossfade("Crossfade"),
     Slide("Slide"),
     Zoom("Zoom"),
+    FadeToBlack("Fade to black"),
+    PageTurn("Page turn"),
+}
+
+/** How far Ken Burns pans and zooms over each photo's time on screen. */
+enum class KenBurnsSpeed(val label: String) {
+    Subtle("Subtle"),
+    Normal("Normal"),
+    Dramatic("Dramatic"),
 }
 
 data class Settings(
     val intervalSeconds: Int = 8,
     val kenBurns: Boolean = true,
+    val kenBurnsSpeed: KenBurnsSpeed = KenBurnsSpeed.Normal,
     val transition: TransitionStyle = TransitionStyle.Crossfade,
     val rememberShuffle: Boolean = true,
     val fairShuffle: Boolean = false,
@@ -57,6 +67,9 @@ class Prefs(context: Context) {
     fun loadSettings(): Settings = Settings(
         intervalSeconds = sp.getInt(KEY_INTERVAL, 8).coerceIn(3, 60),
         kenBurns = sp.getBoolean(KEY_KEN_BURNS, true),
+        kenBurnsSpeed = runCatching {
+            KenBurnsSpeed.valueOf(sp.getString(KEY_KB_SPEED, null) ?: "Normal")
+        }.getOrDefault(KenBurnsSpeed.Normal),
         transition = runCatching {
             TransitionStyle.valueOf(sp.getString(KEY_TRANSITION, null) ?: "Crossfade")
         }.getOrDefault(TransitionStyle.Crossfade),
@@ -68,6 +81,7 @@ class Prefs(context: Context) {
         sp.edit()
             .putInt(KEY_INTERVAL, s.intervalSeconds)
             .putBoolean(KEY_KEN_BURNS, s.kenBurns)
+            .putString(KEY_KB_SPEED, s.kenBurnsSpeed.name)
             .putString(KEY_TRANSITION, s.transition.name)
             .putBoolean(KEY_REMEMBER, s.rememberShuffle)
             .putBoolean(KEY_FAIR, s.fairShuffle)
@@ -83,6 +97,7 @@ class Prefs(context: Context) {
         const val KEY_HINT = "hint_shown"
         const val KEY_INTERVAL = "interval"
         const val KEY_KEN_BURNS = "ken_burns"
+        const val KEY_KB_SPEED = "ken_burns_speed"
         const val KEY_TRANSITION = "transition"
         const val KEY_REMEMBER = "remember_shuffle"
         const val KEY_FAIR = "fair_shuffle"

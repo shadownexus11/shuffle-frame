@@ -3,6 +3,23 @@ package com.shuffleframe.app
 import android.content.Context
 import android.net.Uri
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.snap
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.core.Animatable
@@ -116,10 +133,16 @@ private data class KenBurns(
     val endX: Float, val endY: Float,
 ) {
     companion object {
-        fun random(): KenBurns {
-            val big = 1.10f + Random.nextFloat() * 0.08f
+        fun random(speed: KenBurnsSpeed): KenBurns {
+            // (minimum zoom, extra random zoom, drift range) per speed
+            val (minZoom, extraZoom, driftRange) = when (speed) {
+                KenBurnsSpeed.Subtle -> Triple(1.04f, 0.03f, 0.02f)
+                KenBurnsSpeed.Normal -> Triple(1.10f, 0.08f, 0.06f)
+                KenBurnsSpeed.Dramatic -> Triple(1.22f, 0.13f, 0.10f)
+            }
+            val big = minZoom + Random.nextFloat() * extraZoom
             val zoomIn = Random.nextBoolean()
-            fun drift() = (Random.nextFloat() - 0.5f) * 0.06f
+            fun drift() = (Random.nextFloat() - 0.5f) * driftRange
             return KenBurns(
                 startScale = if (zoomIn) 1.0f else big,
                 endScale = if (zoomIn) big else 1.0f,
@@ -148,11 +171,40 @@ private fun transitionFor(style: TransitionStyle, forward: Boolean): ContentTran
     TransitionStyle.Zoom ->
         (fadeIn(tween(1000)) + scaleIn(tween(1000), initialScale = 1.08f)) togetherWith
             (fadeOut(tween(1000)) + scaleOut(tween(1000), targetScale = 0.96f))
+
+    // Old photo fades fully to black, then the new one fades up.
+    TransitionStyle.FadeToBlack ->
+        fadeIn(tween(900, delayMillis = 900)) togetherWith fadeOut(tween(900))
+
+    // The new photo waits underneath while the old one swings away like a page.
+    // The swing itself is drawn in SlideView; this just keeps the old photo on top.
+    TransitionStyle.PageTurn ->
+        (EnterTransition.None togetherWith fadeOut(tween(200, delayMillis = PAGE_TURN_MS - 150)))
+            .apply { targetContentZIndex = -1f }
+}
+
+private const val PAGE_TURN_MS = 1100
+
+/** Pinch-zoom state for the photo on screen. Only used while paused. */
+private class ZoomState {
+    var scale by mutableFloatStateOf(1f)
+    var offset by mutableStateOf(Offset.Zero)
+    val zoomed get() = scale > 1.01f
+    fun reset() {
+        scale = 1f
+        offset = Offset.Zero
+    }
+}
+
+private fun clampOffset(o: Offset, scale: Float, size: IntSize): Offset {
+    val maxX = (scale - 1f) * size.width / 2f
+    val maxY = (scale - 1f) * size.height / 2f
+    return Offset(o.x.coerceIn(-maxX, maxX), o.y.coerceIn(-maxY, maxY))
 }
 
 // ---------- screen ----------
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalAnimationApi::class)
 @Composable
 fun SlideshowScreen(
     vm: SlideshowViewModel,
@@ -173,6 +225,11 @@ fun SlideshowScreen(
     var interactionTick by remember { mutableIntStateOf(0) }
     var showSettings by remember { mutableStateOf(false) }
     val poke = { interactionTick++ }
+
+    val zoom = remember { ZoomState() }
+    val direction = rememberUpdatedState(slide.forward)
+    LaunchedEffect(slide.key) { zoom.reset() }
+    LaunchedEffect(vm.playing) { if (vm.playing) zoom.reset() }
 
     // Keep the screen awake only while playing.
     DisposableEffect(vm.playing) {
@@ -216,12 +273,44 @@ fun SlideshowScreen(
             .fillMaxSize()
             .background(Ink)
             .clipToBounds()
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = {
-                    controlsVisible = !controlsVisible
-                    interactionTick++
-                    vm.dismissHint()
-                })
+            // Pinch to zoom (and drag to pan once zoomed), only while paused.
+            // Runs in the Initial pass so it gets first refusal before swipe-to-skip.
+            .pointerInput(vm.playing) {
+                if (vm.playing) return@pointerInput
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    do {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val fingers = event.changes.count { it.pressed }
+                        if (fingers >= 2 || zoom.zoomed) {
+                            val newScale = (zoom.scale * event.calculateZoom()).coerceIn(1f, 5f)
+                            zoom.offset = clampOffset(zoom.offset + event.calculatePan(), newScale, size)
+                            zoom.scale = newScale
+                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            }
+            .pointerInput(vm.playing) {
+                val paused = !vm.playing
+                detectTapGestures(
+                    onTap = {
+                        controlsVisible = !controlsVisible
+                        interactionTick++
+                        vm.dismissHint()
+                    },
+                    // Double-tap while paused: zoom in on that spot, or back out.
+                    onDoubleTap = if (paused) { pos ->
+                        if (zoom.zoomed) {
+                            zoom.reset()
+                        } else {
+                            val target = 2.5f
+                            val centre = Offset(size.width / 2f, size.height / 2f)
+                            zoom.offset = clampOffset((pos - centre) * (1f - target), target, size)
+                            zoom.scale = target
+                        }
+                    } else null,
+                )
             }
             .pointerInput(Unit) {
                 var total = 0f
@@ -246,7 +335,21 @@ fun SlideshowScreen(
             transitionSpec = { transitionFor(settings.transition, targetState.forward) },
             label = "slide",
         ) { s ->
-            SlideView(s, settings, targetW, targetH)
+            val pageTurn = settings.transition == TransitionStyle.PageTurn
+            val turn by transition.animateFloat(
+                transitionSpec = { if (pageTurn) tween(PAGE_TURN_MS, easing = FastOutSlowInEasing) else snap() },
+                label = "turn",
+            ) { state -> if (state == EnterExitState.PostExit) 1f else 0f }
+            SlideView(
+                slide = s,
+                settings = settings,
+                width = targetW,
+                height = targetH,
+                playing = vm.playing,
+                zoom = zoom.takeIf { s.key == slide.key },
+                turnProgress = { turn },
+                turnForward = { direction.value },
+            )
         }
 
         // Small paused marker when the controls are hidden.
@@ -347,24 +450,49 @@ fun SlideshowScreen(
 }
 
 @Composable
-private fun SlideView(slide: Slide, settings: Settings, width: Int, height: Int) {
+private fun SlideView(
+    slide: Slide,
+    settings: Settings,
+    width: Int,
+    height: Int,
+    playing: Boolean,
+    zoom: ZoomState?,
+    turnProgress: () -> Float,
+    turnForward: () -> Boolean,
+) {
     val context = LocalContext.current
-    val motion = remember(slide.key) { KenBurns.random() }
+    val motion = remember(slide.key, settings.kenBurnsSpeed) { KenBurns.random(settings.kenBurnsSpeed) }
     val progress = remember(slide.key) { Animatable(0f) }
     val durationMs = settings.intervalSeconds * 1000 + 2500
 
-    LaunchedEffect(slide.key, settings.kenBurns) {
-        if (settings.kenBurns) {
-            progress.animateTo(1f, tween(durationMs, easing = LinearEasing))
-        } else {
+    // Ken Burns runs while playing and freezes while paused, picking up where it stopped.
+    LaunchedEffect(slide.key, settings.kenBurns, playing) {
+        if (!settings.kenBurns) {
             progress.snapTo(0f)
+        } else if (playing) {
+            val remaining = ((1f - progress.value) * durationMs).toInt()
+            if (remaining > 0) progress.animateTo(1f, tween(remaining, easing = LinearEasing))
         }
     }
 
     val backdrop = remember(slide.uri) { backdropRequest(context, slide.uri) }
     val main = remember(slide.uri, width, height) { slideRequest(context, slide.uri, width, height) }
 
-    Box(Modifier.fillMaxSize().clipToBounds()) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                // Page turn: swing away around the left edge (or right, going backwards).
+                val t = turnProgress()
+                if (t > 0f) {
+                    val forward = turnForward()
+                    transformOrigin = TransformOrigin(if (forward) 0f else 1f, 0.5f)
+                    rotationY = (if (forward) -1f else 1f) * 90f * t
+                    cameraDistance = 14f * density
+                }
+            }
+            .clipToBounds()
+    ) {
         AsyncImage(
             model = backdrop,
             contentDescription = null,
@@ -384,11 +512,20 @@ private fun SlideView(slide: Slide, settings: Settings, width: Int, height: Int)
                 .graphicsLayer {
                     val t = if (settings.kenBurns) progress.value else 0f
                     val s = lerp(motion.startScale, motion.endScale, t)
-                    scaleX = s
-                    scaleY = s
-                    translationX = lerp(motion.startX, motion.endX, t) * size.width
-                    translationY = lerp(motion.startY, motion.endY, t) * size.height
+                    val z = zoom?.scale ?: 1f
+                    val pan = zoom?.offset ?: Offset.Zero
+                    scaleX = s * z
+                    scaleY = s * z
+                    translationX = lerp(motion.startX, motion.endX, t) * size.width + pan.x
+                    translationY = lerp(motion.startY, motion.endY, t) * size.height + pan.y
                 },
+        )
+        // Shadow that deepens as the page turns away.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = turnProgress() * 0.6f }
+                .background(Color.Black)
         )
     }
 }
@@ -450,26 +587,20 @@ private fun SettingsSheet(settings: Settings, onChange: (Settings) -> Unit) {
 
         Spacer(Modifier.height(20.dp))
         Label("Transition")
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            TransitionStyle.entries.forEach { style ->
-                val selected = style == settings.transition
-                Text(
-                    style.label,
-                    color = if (selected) Ink else Color.White,
-                    fontSize = 14.sp,
-                    fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(if (selected) Amber else Color.White.copy(alpha = 0.08f))
-                        .clickable { onChange(settings.copy(transition = style)) }
-                        .padding(horizontal = 18.dp, vertical = 10.dp),
-                )
-            }
+        ChoicePills(TransitionStyle.entries, settings.transition, { it.label }) {
+            onChange(settings.copy(transition = it))
         }
 
         Spacer(Modifier.height(28.dp))
         ToggleRow("Ken Burns", "Slow pan and zoom on each photo", settings.kenBurns) {
             onChange(settings.copy(kenBurns = it))
+        }
+        AnimatedVisibility(visible = settings.kenBurns) {
+            Column(Modifier.padding(top = 14.dp)) {
+                ChoicePills(KenBurnsSpeed.entries, settings.kenBurnsSpeed, { it.label }) {
+                    onChange(settings.copy(kenBurnsSpeed = it))
+                }
+            }
         }
 
         Spacer(Modifier.height(28.dp))
@@ -485,6 +616,30 @@ private fun SettingsSheet(settings: Settings, onChange: (Settings) -> Unit) {
             "Give each album equal screen time, so small albums aren’t drowned out. For On this day, each year takes a turn.",
             settings.fairShuffle,
         ) { onChange(settings.copy(fairShuffle = it)) }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun <T> ChoicePills(options: List<T>, selected: T, label: (T) -> String, onPick: (T) -> Unit) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        options.forEach { option ->
+            val isSelected = option == selected
+            Text(
+                label(option),
+                color = if (isSelected) Ink else Color.White,
+                fontSize = 14.sp,
+                fontWeight = if (isSelected) FontWeight.Medium else FontWeight.Normal,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(if (isSelected) Amber else Color.White.copy(alpha = 0.08f))
+                    .clickable { onPick(option) }
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+            )
+        }
     }
 }
 
