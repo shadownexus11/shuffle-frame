@@ -15,3 +15,10 @@ the phone, download the `.apk`, and open it to install or update.
 
 The signing key lives in `keystore/` so every build can update the previous one.
 That is acceptable only because this repository is private and the app is personal.
+
+## Built-in music
+
+The four built-in tracks (Drift, Lantern, Tide, Morning) are original pieces synthesised
+from scratch by `tools/compose_music.py` (no samples, no licences). Each is built to loop
+seamlessly. To regenerate: `python3 tools/compose_music.py app/src/main/res/raw`
+(needs numpy, scipy and ffmpeg).

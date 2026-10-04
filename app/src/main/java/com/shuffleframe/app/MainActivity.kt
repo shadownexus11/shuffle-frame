@@ -1,6 +1,8 @@
 package com.shuffleframe.app
 
+import android.media.AudioManager
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -13,6 +15,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // Privacy: Recent Apps shows a blank card, and screenshots/recordings come out black.
+        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        // The phone's volume buttons control the music, not the ringer.
+        volumeControlStream = AudioManager.STREAM_MUSIC
         goImmersive()
         setContent {
             ShuffleTheme {

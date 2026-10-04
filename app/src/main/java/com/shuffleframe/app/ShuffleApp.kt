@@ -145,7 +145,13 @@ fun ShuffleApp(vm: SlideshowViewModel = viewModel()) {
                     back = vm::back,
                 )
 
-                is UiState.Empty -> MessageScreen(
+                is UiState.Empty -> if (state.kind == EmptyKind.AllHidden) MessageScreen(
+                    title = "Everything\u2019s hidden",
+                    subtitle = "You\u2019ve hidden every photo in \u201c${state.name}\u201d. Bring them back, or choose something else.",
+                    primary = Action("Unhide all", null, vm::unhideAllAndReload),
+                    secondary = Action("or choose albums", null, pickAlbum),
+                    back = null,
+                ) else MessageScreen(
                     title = "Nothing to shuffle",
                     subtitle = when (state.kind) {
                         EmptyKind.Folder ->
@@ -154,6 +160,7 @@ fun ShuffleApp(vm: SlideshowViewModel = viewModel()) {
                             "“${state.name}” has no photos stored on this phone."
                         EmptyKind.OnThisDay ->
                             "No photos taken on this date in previous years. Try again tomorrow; the past is patient."
+                        EmptyKind.AllHidden -> ""
                     },
                     primary = Action("Choose albums", AppIcons.Photos, pickAlbum),
                     secondary = Action("or pick a folder", null, pickFolder),

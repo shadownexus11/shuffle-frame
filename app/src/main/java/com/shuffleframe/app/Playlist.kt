@@ -21,9 +21,9 @@ class Playlist(
     private val seen: MutableSet<String>,
     private val random: Random = Random.Default,
 ) {
-    private val groups: List<List<Uri>> =
-        if (fair) groups.filter { it.isNotEmpty() }
-        else listOf(groups.flatten().distinct())
+    private val groups: List<MutableList<Uri>> =
+        (if (fair) groups.filter { it.isNotEmpty() } else listOf(groups.flatten().distinct()))
+            .map { it.toMutableList() }
 
     private val decks = Array(this.groups.size) { ArrayDeque<Uri>() }
     private val groupBag = ArrayDeque<Int>()
@@ -74,9 +74,43 @@ class Playlist(
     }
 
     private fun draw(): Uri {
-        val g = pickGroup()
-        if (decks[g].isEmpty()) refill(g)
-        return decks[g].removeFirst()
+        // A group can be emptied by hiding photos, so try each group before giving up.
+        repeat(groups.size + 1) {
+            val g = pickGroup()
+            if (decks[g].isEmpty()) refill(g)
+            decks[g].removeFirstOrNull()?.let { return it }
+        }
+        throw NoSuchElementException("No photos left")
+    }
+
+    val isEmpty: Boolean get() = groups.all { it.isEmpty() }
+
+    /**
+     * Takes a photo out of the shuffle (when it's hidden), keeping the rest of the round and
+     * the back/forward history intact. Returns its group, so [restore] can put it back.
+     */
+    fun remove(uri: Uri): Int {
+        var group = -1
+        groups.forEachIndexed { i, g -> if (g.remove(uri)) group = i }
+        decks.forEach { it.remove(uri) }
+        if (pending == uri) pending = null
+        var i = 0
+        while (i < history.size) {
+            if (history[i] == uri) {
+                history.removeAt(i)
+                if (i <= cursor) cursor--
+            } else i++
+        }
+        seen.remove(uri.toString())
+        return group
+    }
+
+    /** Undo for [remove]: the photo rejoins its group and will come round again this round. */
+    fun restore(uri: Uri, group: Int) {
+        if (group !in groups.indices || uri in groups[group]) return
+        groups[group].add(uri)
+        val deck = decks[group]
+        deck.add(if (deck.isEmpty()) 0 else random.nextInt(deck.size + 1), uri)
     }
 
     fun next(): Uri {

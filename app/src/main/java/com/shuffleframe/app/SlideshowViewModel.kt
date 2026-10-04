@@ -3,6 +3,7 @@ package com.shuffleframe.app
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -23,7 +24,7 @@ sealed interface Source {
     data object OnThisDay : Source
 }
 
-enum class EmptyKind { Folder, Albums, OnThisDay }
+enum class EmptyKind { Folder, Albums, OnThisDay, AllHidden }
 
 /** What a photo-permission request was for, so we know where to go once it's granted. */
 enum class PermissionTarget { AlbumPicker, OnThisDay }
@@ -67,6 +68,27 @@ class SlideshowViewModel(app: Application) : AndroidViewModel(app) {
     var showHint by mutableStateOf(false)
         private set
 
+    // Favourite and hidden photos (shared across every album and folder).
+    var favourites by mutableStateOf(prefs.favourites)
+        private set
+    private var hidden: Set<String> = prefs.hidden
+    var hiddenCount by mutableStateOf(hidden.size)
+        private set
+    /** How many favourites are in the current source, so "Favourites only" can't empty the screen. */
+    var favouritesHere by mutableStateOf(0)
+        private set
+    /** The photo just hidden, while its Undo is on offer. */
+    var undoable by mutableStateOf<Uri?>(null)
+        private set
+    private var undoGroup = -1
+
+    // Music.
+    private val music = MusicPlayer(app, viewModelScope)
+    private val builtInTracks = BuiltInTracks.all(app)
+    var userTracks by mutableStateOf(prefs.userTracks)
+        private set
+    val tracks: List<Track> get() = builtInTracks + userTracks
+
     private var currentSource: Source? = null
     private var groups: List<List<Uri>> = emptyList()
     private var playlist: Playlist? = null
@@ -80,6 +102,7 @@ class SlideshowViewModel(app: Application) : AndroidViewModel(app) {
     private val canGoBack get() = lastReady != null && playlist != null
 
     init {
+        music.setPlaylist(tracks, settings.musicSelection)
         when (val s = prefs.source) {
             is Source.Folder -> if (hasFolderPermission(s.uri)) load(s) else goHome()
             is Source.Albums, Source.OnThisDay -> if (MediaAccess.has(ctx)) load(s!!) else goHome()
@@ -176,9 +199,10 @@ class SlideshowViewModel(app: Application) : AndroidViewModel(app) {
     fun onFolderPicked(uri: Uri) {
         val resolver = ctx.contentResolver
         runCatching { resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-        // Let go of any previously chosen folder.
+        // Let go of any previously chosen folder (but not access to music the person added).
+        val musicUris = userTracks.map { it.uri }.toSet()
         resolver.persistedUriPermissions
-            .filter { it.uri != uri }
+            .filter { it.uri != uri && it.uri !in musicUris }
             .forEach {
                 runCatching { resolver.releasePersistableUriPermission(it.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
             }
@@ -232,9 +256,14 @@ class SlideshowViewModel(app: Application) : AndroidViewModel(app) {
                     groups = loaded
                     sourceKey = key
                     seen = if (settings.rememberShuffle) progress.load(key) else HashSet()
-                    playlist = Playlist(groups, settings.fairShuffle, seen)
+                    countFavouritesHere()
+                    if (settings.favouritesOnly && favouritesHere == 0) updateSettings(settings.copy(favouritesOnly = false))
+                    if (!rebuildPlaylist()) {
+                        uiState = UiState.Empty(name, EmptyKind.AllHidden, back)
+                        return@launch
+                    }
                     playing = true
-                    val ready = UiState.Ready(name, total)
+                    val ready = UiState.Ready(name, activeCount())
                     lastReady = ready
                     uiState = ready
                     if (!prefs.hintShown) {
@@ -245,6 +274,156 @@ class SlideshowViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }
+    }
+
+    // ---------- which photos are in play ----------
+
+    private fun isActive(u: Uri): Boolean {
+        val k = u.toString()
+        return k !in hidden && (!settings.favouritesOnly || k in favourites)
+    }
+
+    private fun activeGroups(): List<List<Uri>> = groups.map { g -> g.filter(::isActive) }
+
+    private fun activeCount(): Int = groups.sumOf { g -> g.count(::isActive) }
+
+    private fun countFavouritesHere() {
+        favouritesHere = groups.sumOf { g -> g.count { val k = it.toString(); k in favourites && k !in hidden } }
+    }
+
+    /**
+     * Rebuilds the shuffle from the photos currently in play. In Favourites-only mode the round
+     * is tracked separately, so dipping into favourites doesn't wipe progress through everything.
+     * Returns false if nothing is left to show.
+     */
+    private fun rebuildPlaylist(): Boolean {
+        val active = activeGroups()
+        if (active.all { it.isEmpty() }) {
+            playlist = null
+            return false
+        }
+        playlist = Playlist(active, settings.fairShuffle, if (settings.favouritesOnly) HashSet() else seen)
+        return true
+    }
+
+    private fun refreshCount() {
+        val r = lastReady ?: return
+        val updated = r.copy(count = activeCount())
+        lastReady = updated
+        if (uiState is UiState.Ready) uiState = updated
+    }
+
+    // ---------- favourites and hiding ----------
+
+    fun isFavourite(uri: Uri): Boolean = uri.toString() in favourites
+
+    fun toggleFavourite() {
+        val uri = current?.uri ?: return
+        val k = uri.toString()
+        favourites = if (k in favourites) favourites - k else favourites + k
+        prefs.favourites = favourites
+        countFavouritesHere()
+        if (settings.favouritesOnly && k !in favourites) {
+            // Un-starred in Favourites-only mode: it no longer belongs in this slideshow.
+            playlist?.remove(uri)
+            refreshCount()
+            if (favouritesHere == 0) updateSettings(settings.copy(favouritesOnly = false))
+        }
+    }
+
+    fun hideCurrent() {
+        val uri = current?.uri ?: return
+        val p = playlist ?: return
+        hidden = hidden + uri.toString()
+        prefs.hidden = hidden
+        hiddenCount = hidden.size
+        undoGroup = p.remove(uri)
+        undoable = uri
+        countFavouritesHere()
+        refreshCount()
+        if (p.isEmpty) {
+            if (settings.favouritesOnly && favouritesHere == 0 && activeCountIgnoringFavourites() > 0) {
+                updateSettings(settings.copy(favouritesOnly = false)) // rebuilds and moves on
+            } else {
+                val r = lastReady
+                playlist = null
+                lastReady = null
+                uiState = UiState.Empty(r?.name ?: "", EmptyKind.AllHidden, false)
+            }
+        } else next()
+    }
+
+    private fun activeCountIgnoringFavourites() = groups.sumOf { g -> g.count { it.toString() !in hidden } }
+
+    fun undoHide() {
+        val uri = undoable ?: return
+        undoable = null
+        hidden = hidden - uri.toString()
+        prefs.hidden = hidden
+        hiddenCount = hidden.size
+        countFavouritesHere()
+        playlist?.restore(uri, undoGroup)
+        refreshCount()
+        current = Slide(++keyCounter, uri, forward = false)
+    }
+
+    fun dismissUndo() {
+        undoable = null
+    }
+
+    fun unhideAll() {
+        hidden = emptySet()
+        prefs.hidden = hidden
+        hiddenCount = 0
+        undoable = null
+        countFavouritesHere()
+        if (groups.isNotEmpty()) {
+            rebuildPlaylist()
+            refreshCount()
+        }
+    }
+
+    /** From the "everything's hidden" screen: bring them all back and start again. */
+    fun unhideAllAndReload() {
+        unhideAll()
+        currentSource?.let { load(it) }
+    }
+
+    // ---------- music ----------
+
+    /** The slideshow screen says whether music should be audible right now. */
+    fun setMusicWanted(wanted: Boolean) = music.setWanted(wanted)
+
+    fun addTracks(uris: List<Uri>) {
+        val resolver = ctx.contentResolver
+        val existing = userTracks.map { it.uri }.toSet()
+        val added = uris.filter { it !in existing }.map { uri ->
+            runCatching { resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+            val name = runCatching {
+                resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) c.getString(0) else null
+                }
+            }.getOrNull()?.substringBeforeLast('.') ?: "Track"
+            Track("user:$uri", name, uri, builtIn = false)
+        }
+        if (added.isEmpty()) return
+        userTracks = userTracks + added
+        prefs.userTracks = userTracks
+        // Adding one track: assume they want to hear it.
+        val selection = if (added.size == 1) added[0].id else settings.musicSelection
+        updateSettings(settings.copy(musicEnabled = true, musicSelection = selection))
+        music.setPlaylist(tracks, settings.musicSelection)
+    }
+
+    fun removeTrack(track: Track) {
+        if (track.builtIn) return
+        runCatching {
+            ctx.contentResolver.releasePersistableUriPermission(track.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        userTracks = userTracks.filter { it.id != track.id }
+        prefs.userTracks = userTracks
+        if (settings.musicSelection == track.id) updateSettings(settings.copy(musicSelection = MusicPlayer.MIX))
+        music.setPlaylist(tracks, settings.musicSelection)
     }
 
     // ---------- remembering progress ----------
@@ -258,6 +437,7 @@ class SlideshowViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         saveProgress()
+        music.release()
         super.onCleared()
     }
 
@@ -265,6 +445,7 @@ class SlideshowViewModel(app: Application) : AndroidViewModel(app) {
 
     fun next() {
         val p = playlist ?: return
+        if (p.isEmpty) return
         current = Slide(++keyCounter, p.next(), forward = true)
         if (++sinceSave >= 15) {
             sinceSave = 0
@@ -292,8 +473,15 @@ class SlideshowViewModel(app: Application) : AndroidViewModel(app) {
         settings = newSettings
         prefs.saveSettings(newSettings)
 
-        if (old.fairShuffle != newSettings.fairShuffle && groups.isNotEmpty()) {
-            playlist = Playlist(groups, newSettings.fairShuffle, seen)
+        if ((old.fairShuffle != newSettings.fairShuffle || old.favouritesOnly != newSettings.favouritesOnly) &&
+            groups.isNotEmpty()
+        ) {
+            rebuildPlaylist()
+            refreshCount()
+            if (old.favouritesOnly != newSettings.favouritesOnly && uiState is UiState.Ready) next()
+        }
+        if (old.musicSelection != newSettings.musicSelection) {
+            music.setPlaylist(tracks, newSettings.musicSelection)
         }
         if (old.rememberShuffle && !newSettings.rememberShuffle) {
             ioScope.launch { progress.clear() }

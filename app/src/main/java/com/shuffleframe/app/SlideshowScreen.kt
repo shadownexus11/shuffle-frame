@@ -2,6 +2,11 @@ package com.shuffleframe.app
 
 import android.content.Context
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.currentStateAsState
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.EnterTransition
@@ -268,6 +273,24 @@ fun SlideshowScreen(
         }
     }
 
+    // Undo for a hidden photo is offered for a few seconds.
+    LaunchedEffect(vm.undoable) {
+        if (vm.undoable != null) {
+            delay(5000)
+            vm.dismissUndo()
+        }
+    }
+
+    // Music plays only while the slideshow is playing and the app is on screen.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val lifeState by lifecycle.currentStateAsState()
+    val musicAudible = settings.musicEnabled && vm.playing && lifeState.isAtLeast(Lifecycle.State.STARTED)
+    DisposableEffect(musicAudible) {
+        vm.setMusicWanted(musicAudible)
+        onDispose { vm.setMusicWanted(false) }
+    }
+    val isFavourite = vm.isFavourite(slide.uri)
+
     Box(
         Modifier
             .fillMaxSize()
@@ -364,6 +387,46 @@ fun SlideshowScreen(
             Icon(AppIcons.Pause, contentDescription = "Paused", tint = Color.White.copy(alpha = 0.5f), modifier = Modifier.size(18.dp))
         }
 
+        // Small heart when a favourite is on screen and the controls are hidden.
+        AnimatedVisibility(
+            visible = isFavourite && !controlsVisible,
+            enter = fadeIn(), exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .windowInsetsPadding(WindowInsets.displayCutout)
+                .padding(20.dp),
+        ) {
+            Icon(AppIcons.Heart, contentDescription = "Favourite", tint = Amber.copy(alpha = 0.7f), modifier = Modifier.size(18.dp))
+        }
+
+        // "Photo hidden · Undo"
+        AnimatedVisibility(
+            visible = vm.undoable != null,
+            enter = fadeIn(tween(250)), exit = fadeOut(tween(400)),
+            modifier = Modifier.align(Alignment.TopCenter).padding(top = 110.dp),
+        ) {
+            Row(
+                Modifier
+                    .clip(CircleShape)
+                    .background(Panel.copy(alpha = 0.92f))
+                    .padding(start = 20.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Photo hidden", color = Color.White, fontSize = 14.sp)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "Undo",
+                    color = Amber,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable { vm.undoHide() }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                )
+            }
+        }
+
         // First-run hint.
         AnimatedVisibility(
             visible = vm.showHint && !controlsVisible,
@@ -413,6 +476,12 @@ fun SlideshowScreen(
                             color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp, letterSpacing = 0.5.sp,
                         )
                     }
+                    RoundButton(
+                        AppIcons.Music,
+                        if (settings.musicEnabled) "Turn music off" else "Turn music on",
+                        48.dp, 22.dp,
+                        tint = if (settings.musicEnabled) Amber else Color.White.copy(alpha = 0.55f),
+                    ) { poke(); vm.updateSettings(settings.copy(musicEnabled = !settings.musicEnabled)) }
                     RoundButton(AppIcons.Photos, "Change album or folder", 48.dp, 22.dp) { poke(); onChangeSource() }
                     RoundButton(AppIcons.Tune, "Settings", 48.dp, 22.dp) { poke(); showSettings = true }
                 }
@@ -420,18 +489,32 @@ fun SlideshowScreen(
                 Row(
                     Modifier
                         .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
                         .windowInsetsPadding(WindowInsets.displayCutout)
-                        .padding(bottom = 44.dp),
-                    horizontalArrangement = Arrangement.spacedBy(28.dp),
+                        .padding(start = 12.dp, end = 12.dp, bottom = 44.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    RoundButton(AppIcons.Previous, "Previous", 56.dp, 28.dp) { poke(); vm.previous() }
                     RoundButton(
-                        if (vm.playing) AppIcons.Pause else AppIcons.Play,
-                        if (vm.playing) "Pause" else "Play",
-                        76.dp, 34.dp, emphasised = true,
-                    ) { poke(); vm.togglePlaying() }
-                    RoundButton(AppIcons.Next, "Next", 56.dp, 28.dp) { poke(); vm.next() }
+                        if (isFavourite) AppIcons.Heart else AppIcons.HeartOutline,
+                        if (isFavourite) "Remove from favourites" else "Add to favourites",
+                        48.dp, 24.dp,
+                        tint = if (isFavourite) Amber else Color.White,
+                    ) { poke(); vm.toggleFavourite() }
+                    Spacer(Modifier.weight(1f))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RoundButton(AppIcons.Previous, "Previous", 56.dp, 28.dp) { poke(); vm.previous() }
+                        RoundButton(
+                            if (vm.playing) AppIcons.Pause else AppIcons.Play,
+                            if (vm.playing) "Pause" else "Play",
+                            76.dp, 34.dp, emphasised = true,
+                        ) { poke(); vm.togglePlaying() }
+                        RoundButton(AppIcons.Next, "Next", 56.dp, 28.dp) { poke(); vm.next() }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    RoundButton(AppIcons.Hide, "Hide this photo", 48.dp, 24.dp) { poke(); vm.hideCurrent() }
                 }
             }
         }
@@ -444,7 +527,7 @@ fun SlideshowScreen(
             contentColor = Color.White,
             dragHandle = { BottomSheetDefaults.DragHandle(color = Color.White.copy(alpha = 0.25f)) },
         ) {
-            SettingsSheet(settings = settings, onChange = vm::updateSettings)
+            SettingsSheet(vm = vm, settings = settings, onChange = vm::updateSettings)
         }
     }
 }
@@ -537,6 +620,7 @@ private fun RoundButton(
     size: Dp,
     iconSize: Dp,
     emphasised: Boolean = false,
+    tint: Color = Color.White,
     onClick: () -> Unit,
 ) {
     Box(
@@ -552,12 +636,12 @@ private fun RoundButton(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription = description, tint = Color.White, modifier = Modifier.size(iconSize))
+        Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(iconSize))
     }
 }
 
 @Composable
-private fun SettingsSheet(settings: Settings, onChange: (Settings) -> Unit) {
+private fun SettingsSheet(vm: SlideshowViewModel, settings: Settings, onChange: (Settings) -> Unit) {
     var interval by remember(settings.intervalSeconds) { mutableFloatStateOf(settings.intervalSeconds.toFloat()) }
 
     Column(
@@ -616,7 +700,139 @@ private fun SettingsSheet(settings: Settings, onChange: (Settings) -> Unit) {
             "Give each album equal screen time, so small albums aren’t drowned out. For On this day, each year takes a turn.",
             settings.fairShuffle,
         ) { onChange(settings.copy(fairShuffle = it)) }
+
+        Spacer(Modifier.height(28.dp))
+        Label("Favourites & hidden")
+        val favCount = vm.favouritesHere
+        ToggleRow(
+            "Favourites only",
+            if (favCount == 0) "Tap the heart on photos you love, then switch this on"
+            else "Show just the $favCount favourite${if (favCount == 1) "" else "s"} here",
+            settings.favouritesOnly,
+            enabled = favCount > 0 || settings.favouritesOnly,
+        ) { onChange(settings.copy(favouritesOnly = it)) }
+        Spacer(Modifier.height(18.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Hidden photos", color = Color.White, fontSize = 16.sp)
+                Text(
+                    if (vm.hiddenCount == 0) "None. Tap the eye on a photo to stop it appearing"
+                    else "${vm.hiddenCount} photo${if (vm.hiddenCount == 1) "" else "s"} won\u2019t be shown",
+                    color = Muted, fontSize = 13.sp, lineHeight = 17.sp,
+                )
+            }
+            if (vm.hiddenCount > 0) {
+                Spacer(Modifier.width(12.dp))
+                PillButton("Unhide all") { vm.unhideAll() }
+            }
+        }
+
+        Spacer(Modifier.height(28.dp))
+        MusicSection(vm, settings, onChange)
     }
+}
+
+@Composable
+private fun MusicSection(vm: SlideshowViewModel, settings: Settings, onChange: (Settings) -> Unit) {
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) vm.addTracks(uris)
+    }
+    Label("Music")
+    ToggleRow("Background music", "Plays while the slideshow runs; pauses when you do", settings.musicEnabled) {
+        onChange(settings.copy(musicEnabled = it))
+    }
+    AnimatedVisibility(visible = settings.musicEnabled) {
+        Column(Modifier.padding(top = 12.dp)) {
+            TrackRow(
+                title = "Mix",
+                detail = "All ${vm.tracks.size} tracks, shuffled",
+                selected = settings.musicSelection == MusicPlayer.MIX ||
+                    vm.tracks.none { it.id == settings.musicSelection },
+                onClick = { onChange(settings.copy(musicSelection = MusicPlayer.MIX)) },
+            )
+            vm.tracks.forEach { track ->
+                TrackRow(
+                    title = track.name,
+                    detail = if (track.builtIn) "Built in \u00b7 repeats" else "Your music \u00b7 repeats",
+                    selected = settings.musicSelection == track.id,
+                    onClick = { onChange(settings.copy(musicSelection = track.id)) },
+                    onRemove = if (track.builtIn) null else ({ vm.removeTrack(track) }),
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(
+                Modifier
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.08f))
+                    .clickable { picker.launch(arrayOf("audio/*")) }
+                    .padding(start = 14.dp, end = 18.dp, top = 10.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(AppIcons.Add, contentDescription = null, tint = Amber, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Add music from your phone", color = Color.White, fontSize = 14.sp)
+            }
+            Text(
+                "Volume follows your phone\u2019s volume buttons.",
+                color = Muted, fontSize = 12.sp,
+                modifier = Modifier.padding(top = 10.dp, start = 4.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun TrackRow(
+    title: String,
+    detail: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onRemove: (() -> Unit)? = null,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) Amber.copy(alpha = 0.12f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(if (selected) Amber else Color.White.copy(alpha = 0.15f))
+        )
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Color.White, fontSize = 15.sp, maxLines = 1)
+            Text(detail, color = Muted, fontSize = 12.sp)
+        }
+        if (onRemove != null) {
+            Box(
+                Modifier.size(36.dp).clip(CircleShape).clickable(onClick = onRemove),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(AppIcons.Close, contentDescription = "Remove $title", tint = Muted, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun PillButton(label: String, onClick: () -> Unit) {
+    Text(
+        label,
+        color = Amber,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.Medium,
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(Amber.copy(alpha = 0.12f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -644,9 +860,19 @@ private fun <T> ChoicePills(options: List<T>, selected: T, label: (T) -> String,
 }
 
 @Composable
-private fun ToggleRow(title: String, detail: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun ToggleRow(
+    title: String,
+    detail: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onChange: (Boolean) -> Unit,
+) {
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onChange(!checked) },
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled) { onChange(!checked) }
+            .graphicsLayer { alpha = if (enabled) 1f else 0.45f },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
@@ -657,6 +883,7 @@ private fun ToggleRow(title: String, detail: String, checked: Boolean, onChange:
         Switch(
             checked = checked,
             onCheckedChange = onChange,
+            enabled = enabled,
             colors = SwitchDefaults.colors(
                 checkedTrackColor = Amber,
                 checkedThumbColor = Ink,

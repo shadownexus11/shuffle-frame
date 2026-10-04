@@ -25,6 +25,10 @@ data class Settings(
     val transition: TransitionStyle = TransitionStyle.Crossfade,
     val rememberShuffle: Boolean = true,
     val fairShuffle: Boolean = false,
+    val favouritesOnly: Boolean = false,
+    val musicEnabled: Boolean = false,
+    /** A track id, or [MusicPlayer.MIX] for everything shuffled. */
+    val musicSelection: String = MusicPlayer.MIX,
 )
 
 class Prefs(context: Context) {
@@ -75,6 +79,9 @@ class Prefs(context: Context) {
         }.getOrDefault(TransitionStyle.Crossfade),
         rememberShuffle = sp.getBoolean(KEY_REMEMBER, true),
         fairShuffle = sp.getBoolean(KEY_FAIR, false),
+        favouritesOnly = sp.getBoolean(KEY_FAV_ONLY, false),
+        musicEnabled = sp.getBoolean(KEY_MUSIC_ON, false),
+        musicSelection = sp.getString(KEY_MUSIC_SELECTION, null) ?: MusicPlayer.MIX,
     )
 
     fun saveSettings(s: Settings) {
@@ -85,8 +92,32 @@ class Prefs(context: Context) {
             .putString(KEY_TRANSITION, s.transition.name)
             .putBoolean(KEY_REMEMBER, s.rememberShuffle)
             .putBoolean(KEY_FAIR, s.fairShuffle)
+            .putBoolean(KEY_FAV_ONLY, s.favouritesOnly)
+            .putBoolean(KEY_MUSIC_ON, s.musicEnabled)
+            .putString(KEY_MUSIC_SELECTION, s.musicSelection)
             .apply()
     }
+
+    // Favourite and hidden photos, by address. Copied on write so the stored set is never mutated.
+    var favourites: Set<String>
+        get() = sp.getStringSet(KEY_FAVOURITES, emptySet())!!.toSet()
+        set(value) = sp.edit().putStringSet(KEY_FAVOURITES, HashSet(value)).apply()
+
+    var hidden: Set<String>
+        get() = sp.getStringSet(KEY_HIDDEN, emptySet())!!.toSet()
+        set(value) = sp.edit().putStringSet(KEY_HIDDEN, HashSet(value)).apply()
+
+    /** Music the person has added, stored one per line as "address<TAB>name". */
+    var userTracks: List<Track>
+        get() = (sp.getString(KEY_USER_TRACKS, null) ?: "").lines().mapNotNull { line ->
+            val parts = line.split('\t', limit = 2)
+            if (parts.size < 2 || parts[0].isBlank()) null
+            else Track(id = "user:" + parts[0], name = parts[1], uri = Uri.parse(parts[0]), builtIn = false)
+        }
+        set(value) = sp.edit().putString(
+            KEY_USER_TRACKS,
+            value.joinToString("\n") { "${it.uri}\t${it.name.replace('\t', ' ').replace('\n', ' ')}" },
+        ).apply()
 
     private companion object {
         const val KEY_FOLDER = "folder_uri"
@@ -101,5 +132,11 @@ class Prefs(context: Context) {
         const val KEY_TRANSITION = "transition"
         const val KEY_REMEMBER = "remember_shuffle"
         const val KEY_FAIR = "fair_shuffle"
+        const val KEY_FAV_ONLY = "favourites_only"
+        const val KEY_MUSIC_ON = "music_on"
+        const val KEY_MUSIC_SELECTION = "music_selection"
+        const val KEY_FAVOURITES = "favourites"
+        const val KEY_HIDDEN = "hidden"
+        const val KEY_USER_TRACKS = "user_tracks"
     }
 }
