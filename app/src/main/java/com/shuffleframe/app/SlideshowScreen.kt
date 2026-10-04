@@ -19,6 +19,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -37,6 +39,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -423,6 +426,7 @@ private fun SettingsSheet(settings: Settings, onChange: (Settings) -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 28.dp)
             .padding(bottom = 28.dp)
             .navigationBarsPadding()
@@ -464,24 +468,48 @@ private fun SettingsSheet(settings: Settings, onChange: (Settings) -> Unit) {
         }
 
         Spacer(Modifier.height(28.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Ken Burns", color = Color.White, fontSize = 16.sp)
-                Text("Slow pan and zoom on each photo", color = Muted, fontSize = 13.sp)
-            }
-            Spacer(Modifier.width(12.dp))
-            Switch(
-                checked = settings.kenBurns,
-                onCheckedChange = { onChange(settings.copy(kenBurns = it)) },
-                colors = SwitchDefaults.colors(
-                    checkedTrackColor = Amber,
-                    checkedThumbColor = Ink,
-                    uncheckedTrackColor = Color.White.copy(alpha = 0.1f),
-                    uncheckedThumbColor = Muted,
-                    uncheckedBorderColor = Color.Transparent,
-                ),
-            )
+        ToggleRow("Ken Burns", "Slow pan and zoom on each photo", settings.kenBurns) {
+            onChange(settings.copy(kenBurns = it))
         }
+
+        Spacer(Modifier.height(28.dp))
+        Label("Shuffle")
+        ToggleRow(
+            "Remember where I got to",
+            "Carry on the current round after closing the app, instead of starting afresh",
+            settings.rememberShuffle,
+        ) { onChange(settings.copy(rememberShuffle = it)) }
+        Spacer(Modifier.height(18.dp))
+        ToggleRow(
+            "Fair shuffle",
+            "Give each album equal screen time, so small albums aren’t drowned out. For On this day, each year takes a turn.",
+            settings.fairShuffle,
+        ) { onChange(settings.copy(fairShuffle = it)) }
+    }
+}
+
+@Composable
+private fun ToggleRow(title: String, detail: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onChange(!checked) },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Color.White, fontSize = 16.sp)
+            Text(detail, color = Muted, fontSize = 13.sp, lineHeight = 17.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            colors = SwitchDefaults.colors(
+                checkedTrackColor = Amber,
+                checkedThumbColor = Ink,
+                uncheckedTrackColor = Color.White.copy(alpha = 0.1f),
+                uncheckedThumbColor = Muted,
+                uncheckedBorderColor = Color.Transparent,
+            ),
+        )
     }
 }
 

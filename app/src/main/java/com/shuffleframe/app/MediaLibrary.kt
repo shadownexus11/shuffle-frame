@@ -10,6 +10,12 @@ import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+
+/** Selection key for the "All photos" entry in the album picker. */
+const val ALL_PHOTOS_KEY = "__all__"
 
 /** A Gallery-style album: every photo that shares a folder ("bucket"). id == null means all photos. */
 data class Album(val id: String?, val name: String, val count: Int, val cover: Uri)
@@ -77,16 +83,54 @@ object MediaLibrary {
         listOf(Album(null, "All photos", total, cover)) + albums
     }
 
-    /** Every photo in one album (or all photos when [bucketId] is null). */
-    suspend fun loadAlbumImages(context: Context, bucketId: String?): List<Uri> = withContext(Dispatchers.IO) {
-        val selection = bucketId?.let { "${MediaStore.Images.Media.BUCKET_ID} = ?" }
-        val args = bucketId?.let { arrayOf(it) }
-        val results = ArrayList<Uri>()
-        context.contentResolver.query(
-            collection, arrayOf(MediaStore.Images.Media._ID), selection, args, null,
-        )?.use { c ->
-            while (c.moveToNext()) results.add(ContentUris.withAppendedId(collection, c.getLong(0)))
+    /**
+     * Photos for the chosen albums, one list per album (in [bucketIds] order).
+     * An empty [bucketIds] means all photos, as a single list.
+     */
+    suspend fun loadAlbumGroups(context: Context, bucketIds: List<String>): List<List<Uri>> =
+        withContext(Dispatchers.IO) {
+            val selection = if (bucketIds.isEmpty()) null
+            else "${MediaStore.Images.Media.BUCKET_ID} IN (${bucketIds.joinToString(",") { "?" }})"
+            val args = bucketIds.takeIf { it.isNotEmpty() }?.toTypedArray()
+            val byBucket = LinkedHashMap<String, MutableList<Uri>>()
+            context.contentResolver.query(
+                collection,
+                arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.BUCKET_ID),
+                selection, args, null,
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val uri = ContentUris.withAppendedId(collection, c.getLong(0))
+                    val bucket = if (bucketIds.isEmpty()) ALL_PHOTOS_KEY else (c.getString(1) ?: "unknown")
+                    byBucket.getOrPut(bucket) { ArrayList() }.add(uri)
+                }
+            }
+            if (bucketIds.isEmpty()) listOf(byBucket[ALL_PHOTOS_KEY].orEmpty())
+            else bucketIds.map { byBucket[it].orEmpty() }
         }
-        results
-    }
+
+    /**
+     * Photos taken on [today]'s day and month in earlier years, grouped by year (oldest first).
+     * Uses the date the photo was taken, not when it was copied to the phone.
+     */
+    suspend fun loadOnThisDay(context: Context, today: LocalDate): List<List<Uri>> =
+        withContext(Dispatchers.IO) {
+            val zone = ZoneId.systemDefault()
+            val byYear = sortedMapOf<Int, MutableList<Uri>>()
+            context.contentResolver.query(
+                collection,
+                arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATE_TAKEN),
+                "${MediaStore.Images.Media.DATE_TAKEN} IS NOT NULL", null, null,
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val taken = c.getLong(1)
+                    if (taken <= 0L) continue
+                    val date = Instant.ofEpochMilli(taken).atZone(zone).toLocalDate()
+                    if (date.monthValue == today.monthValue && date.dayOfMonth == today.dayOfMonth && date.year < today.year) {
+                        byYear.getOrPut(date.year) { ArrayList() }
+                            .add(ContentUris.withAppendedId(collection, c.getLong(0)))
+                    }
+                }
+            }
+            byYear.values.toList()
+        }
 }
