@@ -155,7 +155,7 @@ fun SlideshowScreen(
     vm: SlideshowViewModel,
     folderName: String,
     count: Int,
-    onChangeFolder: () -> Unit,
+    onChangeSource: () -> Unit,
 ) {
     val slide = vm.current ?: return
     val settings = vm.settings
@@ -307,7 +307,7 @@ fun SlideshowScreen(
                             color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp, letterSpacing = 0.5.sp,
                         )
                     }
-                    RoundButton(AppIcons.Folder, "Change folder", 48.dp, 22.dp) { poke(); onChangeFolder() }
+                    RoundButton(AppIcons.Photos, "Change album or folder", 48.dp, 22.dp) { poke(); onChangeSource() }
                     RoundButton(AppIcons.Tune, "Settings", 48.dp, 22.dp) { poke(); showSettings = true }
                 }
 

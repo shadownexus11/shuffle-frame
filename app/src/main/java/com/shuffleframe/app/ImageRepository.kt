@@ -9,11 +9,13 @@ import kotlinx.coroutines.withContext
 
 object ImageRepository {
 
-    private val imageExtensions = setOf("jpg", "jpeg", "png")
-    private val imageMimeTypes = setOf("image/jpeg", "image/jpg", "image/png")
+    private val imageExtensions = setOf("jpg", "jpeg", "png", "heic", "heif", "webp")
+    private val imageMimeTypes = setOf(
+        "image/jpeg", "image/jpg", "image/png", "image/heic", "image/heif", "image/webp",
+    )
 
     /**
-     * Lists the JPEG and PNG files directly inside the chosen folder (not subfolders).
+     * Lists the photos (JPEG, PNG, HEIC, WebP) directly inside the chosen folder (not subfolders).
      * Uses a single query rather than one call per file, so thousands of photos are fine.
      */
     suspend fun loadImages(context: Context, treeUri: Uri): List<Uri> = withContext(Dispatchers.IO) {

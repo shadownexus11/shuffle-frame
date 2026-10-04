@@ -18,9 +18,30 @@ data class Settings(
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("shuffle_prefs", Context.MODE_PRIVATE)
 
-    var folderUri: Uri?
-        get() = sp.getString(KEY_FOLDER, null)?.let(Uri::parse)
-        set(value) = sp.edit().putString(KEY_FOLDER, value?.toString()).apply()
+    /** Where the photos come from: a Gallery album or a chosen folder. */
+    var source: Source?
+        get() {
+            val folder = sp.getString(KEY_FOLDER, null)?.let(Uri::parse)
+            return when (sp.getString(KEY_SOURCE_TYPE, null) ?: if (folder != null) "folder" else null) {
+                "folder" -> folder?.let { Source.Folder(it) }
+                "album" -> Source.Album(
+                    id = sp.getString(KEY_ALBUM_ID, null),
+                    name = sp.getString(KEY_ALBUM_NAME, null) ?: "Album",
+                )
+                else -> null
+            }
+        }
+        set(value) {
+            val e = sp.edit()
+            when (value) {
+                is Source.Folder -> e.putString(KEY_SOURCE_TYPE, "folder").putString(KEY_FOLDER, value.uri.toString())
+                is Source.Album -> e.putString(KEY_SOURCE_TYPE, "album")
+                    .putString(KEY_ALBUM_ID, value.id)
+                    .putString(KEY_ALBUM_NAME, value.name)
+                null -> e.remove(KEY_SOURCE_TYPE)
+            }
+            e.apply()
+        }
 
     var hintShown: Boolean
         get() = sp.getBoolean(KEY_HINT, false)
@@ -44,6 +65,9 @@ class Prefs(context: Context) {
 
     private companion object {
         const val KEY_FOLDER = "folder_uri"
+        const val KEY_SOURCE_TYPE = "source_type"
+        const val KEY_ALBUM_ID = "album_id"
+        const val KEY_ALBUM_NAME = "album_name"
         const val KEY_HINT = "hint_shown"
         const val KEY_INTERVAL = "interval"
         const val KEY_KEN_BURNS = "ken_burns"
